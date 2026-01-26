@@ -38,22 +38,25 @@ def ans_greeting(message):
 
 @bot.message_handler(commands=["register"])
 def ans_register(message):
-    user_id = message.from_user.id
-    username = message.from_user.username
-    first_name = message.from_user.first_name
+    try:
+        user_id = message.from_user.id
+        username = message.from_user.username
+        first_name = message.from_user.first_name
 
-    if users_collection.find_one({"_id": user_id}):
-        bot.reply_to(message, "Você já está registrado!")
-    else:
-        users_collection.insert_one(
-            {
-                "_id": user_id,
-                "username": username,
-                "first_name": first_name,
-                "created_at": datetime.now(),
-            }
-        )
-        bot.reply_to(message, "Registrado com sucesso!")
+        if users_collection.find_one({"_id": user_id}):
+            bot.reply_to(message, "Você já está registrado!")
+        else:
+            users_collection.insert_one(
+                {
+                    "_id": user_id,
+                    "username": username,
+                    "first_name": first_name,
+                    "created_at": datetime.now(),
+                }
+            )
+            bot.reply_to(message, "Registrado com sucesso!")
+    except Exception as e:
+        bot.reply_to(message, f"Erro ao registrar: {str(e)}\nVerifique as permissões do banco de dados.")
 
 
 @bot.message_handler(commands=["add_expense"])
@@ -63,10 +66,15 @@ def ans_add_expense(message):
         if len(args) < 3:
             bot.reply_to(
                 message,
-                "Formato inválido. Use:\n"
-                "/add_expense <valor> <categoria> <metodo_pagamento> (para hoje)\n"
-                "OU\n"
-                "/add_expense <valor> <categoria> <data:DD-MM-YYYY> <metodo_pagamento>",
+                "⚠️ *Formato incorreto!*\n\n"
+                "Para registrar um gasto hoje, use:\n"
+                "`/add_expense valor categoria metodo_pagamento` \n"
+                "Ex: `/add_expense 15.00 Cafe Dinheiro` \n\n"
+                "Para registrar um gasto em outra data, use:\n"
+                "`/add_expense valor categoria DD-MM-YYYY metodo_pagamento` \n"
+                "Ex: `/add_expense 15.00 Cafe 20-01-2026 Dinheiro` \n\n"
+                "💡 *Dica:* Se o nome da categoria ou do método tiver mais de uma palavra, não tem problema!",
+                parse_mode="Markdown"
             )
             return
 
@@ -166,6 +174,34 @@ def ans_month_expenses(message):
         bot.reply_to(message, f"Erro ao buscar despesas: {str(e)}")
 
 
+def setup_bot_info():
+    """Configura a descrição e os comandos do bot no Telegram."""
+    try:
+        # Descrição (O que aparece na tela 'O que este bot pode fazer?')
+        bot.set_my_description(
+            "🌟 Bem-vindo ao Finanças Bot!\n\n"
+            "Eu sou seu assistente pessoal para controle financeiro. "
+            "Comigo você pode registrar seus gastos diários, organizar por categorias "
+            "e visualizar relatórios mensais.\n\n"
+            "Clique em /start para começar a organizar sua vida financeira!"
+        )
+
+        # Descrição Curta (O que aparece no perfil do bot e links de compartilhamento)
+        bot.set_my_short_description("Seu assistente pessoal de controle financeiro 💰")
+
+        # Menu de Comandos (Botão Menu azul no canto inferior esquerdo)
+        bot.set_my_commands([
+            telebot.types.BotCommand("/start", "Iniciar o bot e ver instruções"),
+            telebot.types.BotCommand("/register", "Criar sua conta"),
+            telebot.types.BotCommand("/add_expense", "Adicionar nova despesa"),
+            telebot.types.BotCommand("/month_expenses", "Ver resumo do mês")
+        ])
+        print("Informações do bot atualizadas com sucesso!")
+    except Exception as e:
+        print(f"Erro ao atualizar informações do bot: {e}")
+
+
 print("Bot está rodando...")
+setup_bot_info()
 bot.polling()
 
