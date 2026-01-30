@@ -2,8 +2,13 @@ import telebot
 import os
 from dotenv import load_dotenv
 from pymongo import MongoClient
-from datetime import datetime
+from datetime import datetime, timedelta
 import calendar
+import matplotlib
+
+matplotlib.use("Agg")  # Set backend for non-interactive environments
+import matplotlib.pyplot as plt
+import io
 
 load_dotenv()
 
@@ -31,8 +36,10 @@ def ans_greeting(message):
         "✅ /register - Comece por aqui para criar sua conta.\n"
         "💰 /add_expense - Registre um gasto. Ex: `/add_expense 25.50 Almoço Pix`\n"
         "   *(Se quiser colocar uma data diferente, use: /add_expense 25.50 Almoço 20-01-2026 Pix)*\n"
-        "📊 /month_expenses - Veja seu resumo do mês. Ex: `/month_expenses 01 2026`\n\n"
-        "Como posso te ajudar hoje?"
+        "📊 /month_expenses - Veja seu resumo do mês. Ex: `/month_expenses 01 2026`\n"
+        "🍕 /expenses_graphic - Veja um gráfico dos seus gastos.\n"
+        "   Ex: `/expenses_graphic 1m` (último mês), `1w` (última semana), `1d` (hoje) ou `1y` (último ano).\n\n"
+        "Como posso te ajudar hoje?",
     )
 
 
@@ -56,7 +63,10 @@ def ans_register(message):
             )
             bot.reply_to(message, "Registrado com sucesso!")
     except Exception as e:
-        bot.reply_to(message, f"Erro ao registrar: {str(e)}\nVerifique as permissões do banco de dados.")
+        bot.reply_to(
+            message,
+            f"Erro ao registrar: {str(e)}\nVerifique as permissões do banco de dados.",
+        )
 
 
 @bot.message_handler(commands=["add_expense"])
@@ -74,12 +84,19 @@ def ans_add_expense(message):
                 "`/add_expense valor categoria DD-MM-YYYY metodo_pagamento` \n"
                 "Ex: `/add_expense 15.00 Cafe 20-01-2026 Dinheiro` \n\n"
                 "💡 *Dica:* Se o nome da categoria ou do método tiver mais de uma palavra, não tem problema!",
-                parse_mode="Markdown"
+                parse_mode="Markdown",
             )
             return
 
-        amount = float(args[0].replace(",", "."))
-        category = args[1]
+        # Parse amount handling Brazilian format (1.200,50) vs US format (1200.50)
+        raw_amount = args[0]
+        if "," in raw_amount:
+            amount_str = raw_amount.replace(".", "").replace(",", ".")
+        else:
+            amount_str = raw_amount
+            
+        amount = float(amount_str)
+        category = args[1].title()
 
         try:
             date_obj = datetime.strptime(args[2], "%d-%m-%Y")
@@ -119,12 +136,20 @@ def ans_add_expense(message):
 def ans_month_expenses(message):
     try:
         args = message.text.split()[1:]
-        if len(args) != 2:
-            bot.reply_to(message, "Formato inválido. Use: /month_expenses <MM> <YYYY>")
+        if len(args) == 2:
+            month = int(args[0])
+            year = int(args[1])
+        elif len(args) == 0:
+            today = datetime.now()
+            month = today.month
+            year = today.year
+        else:
+            bot.reply_to(
+                message,
+                "Formato invalido. Por favor use o formato: mes ano `(Ex:.. 01 2026)` ou apenas digite o comando para receber do mes atual.",
+                parse_mode="Markdown",
+            )
             return
-
-        month = int(args[0])
-        year = int(args[1])
 
         if month < 1 or month > 12:
             bot.reply_to(message, "Mês inválido (1-12).")
@@ -174,6 +199,82 @@ def ans_month_expenses(message):
         bot.reply_to(message, f"Erro ao buscar despesas: {str(e)}")
 
 
+@bot.message_handler(commands=["expenses_graphic"])
+def ans_expenses_graphic(message):
+    try:
+        args = message.text.split()[1:]
+        period = args[0].lower() if args else "1m"  # Default to 1 month
+
+        end_date = datetime.now()
+        start_date = None
+        period_name = ""
+
+        if period == "1d":
+            start_date = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            period_name = "Hoje"
+        elif period == "1w":
+            start_date = end_date - timedelta(days=7)
+            period_name = "Últimos 7 dias"
+        elif period == "1m":
+            start_date = end_date - timedelta(days=30)
+            period_name = "Últimos 30 dias"
+        elif period == "1y":
+            start_date = end_date - timedelta(days=365)
+            period_name = "Último Ano"
+        else:
+            bot.reply_to(
+                message,
+                "⚠️ Opção inválida. Use:\n"
+                "`1d` (Hoje)\n"
+                "`1w` (7 dias)\n"
+                "`1m` (30 dias)\n"
+                "`1y` (365 dias)",
+                parse_mode="Markdown",
+            )
+            return
+
+        pipeline = [
+            {
+                "$match": {
+                    "user_id": message.from_user.id,
+                    "date": {"$gte": start_date, "$lte": end_date},
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$category",
+                    "total": {"$sum": "$amount"},
+                }
+            },
+        ]
+
+        results = list(expenses_collection.aggregate(pipeline))
+
+        if not results:
+            bot.reply_to(message, f"Nenhuma despesa encontrada para: {period_name}.")
+            return
+
+        categories = [item["_id"] for item in results]
+        totals = [item["total"] for item in results]
+
+        plt.figure(figsize=(8, 6))
+        plt.pie(totals, labels=categories, autopct="%1.1f%%", startangle=140)
+        plt.title(f"Gastos - {period_name}")
+        plt.axis("equal")
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png")
+        buf.seek(0)
+        plt.close()
+
+        bot.send_photo(
+            message.chat.id, buf, caption=f"Gráfico de despesas: {period_name}"
+        )
+
+    except Exception as e:
+        bot.reply_to(message, f"Erro ao gerar gráfico: {str(e)}")
+
+
 def setup_bot_info():
     """Configura a descrição e os comandos do bot no Telegram."""
     try:
@@ -182,26 +283,12 @@ def setup_bot_info():
             "🌟 Bem-vindo ao Finanças Bot!\n\n"
             "Eu sou seu assistente pessoal para controle financeiro. "
             "Comigo você pode registrar seus gastos diários, organizar por categorias "
-            "e visualizar relatórios mensais.\n\n"
-            "Clique em /start para começar a organizar sua vida financeira!"
+            "e visualizar relatórios mensais."
         )
-
-        # Descrição Curta (O que aparece no perfil do bot e links de compartilhamento)
-        bot.set_my_short_description("Seu assistente pessoal de controle financeiro 💰")
-
-        # Menu de Comandos (Botão Menu azul no canto inferior esquerdo)
-        bot.set_my_commands([
-            telebot.types.BotCommand("/start", "Iniciar o bot e ver instruções"),
-            telebot.types.BotCommand("/register", "Criar sua conta"),
-            telebot.types.BotCommand("/add_expense", "Adicionar nova despesa"),
-            telebot.types.BotCommand("/month_expenses", "Ver resumo do mês")
-        ])
-        print("Informações do bot atualizadas com sucesso!")
     except Exception as e:
-        print(f"Erro ao atualizar informações do bot: {e}")
+        print(f"Erro ao configurar info do bot: {e}")
 
 
-print("Bot está rodando...")
-setup_bot_info()
-bot.polling()
-
+if __name__ == "__main__":
+    setup_bot_info()
+    bot.polling()
