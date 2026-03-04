@@ -9,6 +9,8 @@ import matplotlib
 matplotlib.use("Agg")  # Set backend for non-interactive environments
 import matplotlib.pyplot as plt
 import io
+from apscheduler.schedulers.background import BackgroundScheduler
+from bson.objectid import ObjectId
 
 load_dotenv()
 
@@ -25,6 +27,7 @@ client = MongoClient(MONGO_URI)
 db = client["financas_bot"]
 users_collection = db["users"]
 expenses_collection = db["expenses"]
+recurring_collection = db["recurring_expenses"]
 
 
 @bot.message_handler(commands=["start", "ola"])
@@ -38,7 +41,10 @@ def ans_greeting(message):
         "   *(Se quiser colocar uma data diferente, use: /add_expense 25.50 Almoço 20-01-2026 Pix)*\n"
         "📊 /month_expenses - Veja seu resumo do mês. Ex: `/month_expenses 01 2026`\n"
         "🍕 /expenses_graphic - Veja um gráfico dos seus gastos.\n"
-        "   Ex: `/expenses_graphic 1m` (último mês), `1w` (última semana), `1d` (hoje) ou `1y` (último ano).\n\n"
+        "   Ex: `/expenses_graphic 1m` (último mês), `1w` (última semana), `1d` (hoje) ou `1y` (último ano).\n"
+        "🔁 /add_recurring - Adicione um gasto recorrente mensal.\n"
+        "📋 /list_recurring - Liste seus gastos recorrentes.\n"
+        "❌ /remove_recurring - Remova um gasto recorrente.\n\n"
         "Como posso te ajudar hoje?",
     )
 
@@ -94,7 +100,7 @@ def ans_add_expense(message):
             amount_str = raw_amount.replace(".", "").replace(",", ".")
         else:
             amount_str = raw_amount
-            
+
         amount = float(amount_str)
         category = args[1].title()
 
@@ -130,6 +136,123 @@ def ans_add_expense(message):
         )
     except Exception as e:
         bot.reply_to(message, f"Ocorreu um erro: {str(e)}")
+
+
+@bot.message_handler(commands=["add_recurring"])
+def ans_add_recurring(message):
+    try:
+        args = message.text.split()[1:]
+        if len(args) < 4:
+            bot.reply_to(
+                message,
+                "⚠️ *Formato incorreto!*\n\n"
+                "Para registrar um gasto recorrente mensal, use:\n"
+                "`/add_recurring valor categoria dia_do_mes metodo_pagamento` \n"
+                "Ex: `/add_recurring 1500.00 Aluguel 05 Pix` \n\n"
+                "💡 *Dica:* O bot verificará todo mês e adicionará automaticamente.",
+                parse_mode="Markdown",
+            )
+            return
+
+        raw_amount = args[0]
+        if "," in raw_amount:
+            amount_str = raw_amount.replace(".", "").replace(",", ".")
+        else:
+            amount_str = raw_amount
+
+        amount = float(amount_str)
+        category = args[1].title()
+        day_of_month = int(args[2])
+        payment_method = " ".join(args[3:])
+
+        if day_of_month < 1 or day_of_month > 31:
+            bot.reply_to(message, "Dia do mês deve ser entre 1 e 31.")
+            return
+
+        recurring_expense = {
+            "user_id": message.from_user.id,
+            "amount": amount,
+            "category": category,
+            "day_of_month": day_of_month,
+            "payment_method": payment_method,
+            "last_processed": None,
+            "created_at": datetime.now(),
+        }
+
+        recurring_collection.insert_one(recurring_expense)
+        bot.reply_to(
+            message,
+            f"Gasto recorrente adicionado: {payment_method} ({category}) - R$ {amount:.2f} todo dia {day_of_month:02d}",
+        )
+
+    except ValueError:
+        bot.reply_to(message, "Valor ou dia inválidos. Certifique-se de usar números.")
+    except Exception as e:
+        bot.reply_to(message, f"Ocorreu um erro: {str(e)}")
+
+
+@bot.message_handler(commands=["list_recurring"])
+def ans_list_recurring(message):
+    try:
+        user_id = message.from_user.id
+        recurrings = list(recurring_collection.find({"user_id": user_id}))
+
+        if not recurrings:
+            bot.reply_to(message, "Você não tem gastos recorrentes cadastrados.")
+            return
+
+        response = "📋 *Seus Gastos Recorrentes:*\n\n"
+        for i, rec in enumerate(recurrings):
+            response += (
+                f"{i + 1}. `{rec['_id']}`\n"
+                f"   💰 R$ {rec['amount']:.2f} - {rec['category']}\n"
+                f"   📅 Todo dia {rec['day_of_month']:02d} ({rec['payment_method']})\n\n"
+            )
+
+        response += "Para remover, use: `/remove_recurring ID_OU_NUMERO`"
+        bot.reply_to(message, response, parse_mode="Markdown")
+    except Exception as e:
+        bot.reply_to(message, f"Erro ao listar: {str(e)}")
+
+
+@bot.message_handler(commands=["remove_recurring"])
+def ans_remove_recurring(message):
+    try:
+        args = message.text.split()[1:]
+        if not args:
+            bot.reply_to(
+                message,
+                "Por favor, informe o ID ou o número da lista do gasto recorrente.",
+            )
+            return
+
+        target = args[0]
+        user_id = message.from_user.id
+
+        try:
+            index = int(target) - 1
+            recurrings = list(recurring_collection.find({"user_id": user_id}))
+            if 0 <= index < len(recurrings):
+                target_id = recurrings[index]["_id"]
+            else:
+                target_id = target  # Fallback to string ID
+        except ValueError:
+            target_id = target
+
+        try:
+            query = {"_id": ObjectId(target_id), "user_id": user_id}
+        except:
+            query = {"_id": target_id, "user_id": user_id}
+
+        result = recurring_collection.delete_one(query)
+
+        if result.deleted_count > 0:
+            bot.reply_to(message, "Gasto recorrente removido com sucesso!")
+        else:
+            bot.reply_to(message, "Gasto recorrente não encontrado.")
+
+    except Exception as e:
+        bot.reply_to(message, f"Erro ao remover: {str(e)}")
 
 
 @bot.message_handler(commands=["month_expenses"])
@@ -289,6 +412,63 @@ def setup_bot_info():
         print(f"Erro ao configurar info do bot: {e}")
 
 
+def process_recurring_expenses():
+    """Verifica e adiciona gastos recorrentes do mês atual."""
+    try:
+        now = datetime.now()
+        current_month_start = now.replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+
+        recurrings = recurring_collection.find()
+
+        for rec in recurrings:
+            last_processed = rec.get("last_processed")
+            if last_processed and last_processed >= current_month_start:
+                continue
+
+            if now.day >= rec["day_of_month"] or (
+                now.day == 1 and rec["day_of_month"] >= 28
+            ):
+                expense_date = now.replace(
+                    day=rec["day_of_month"], hour=0, minute=0, second=0, microsecond=0
+                )
+
+                expense = {
+                    "user_id": rec["user_id"],
+                    "amount": rec["amount"],
+                    "category": rec["category"],
+                    "date": expense_date,
+                    "payment_method": rec["payment_method"],
+                    "created_at": datetime.now(),
+                    "is_recurring": True,
+                }
+
+                expenses_collection.insert_one(expense)
+
+                # Atualiza last_processed
+                recurring_collection.update_one(
+                    {"_id": rec["_id"]}, {"$set": {"last_processed": datetime.now()}}
+                )
+                print(
+                    f"Gasto recorrente processado: {rec['category']} para usuário {rec['user_id']}"
+                )
+
+    except Exception as e:
+        print(f"Erro no processamento recorrente: {e}")
+
+
 if __name__ == "__main__":
     setup_bot_info()
+
+    # Inicia o scheduler
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        process_recurring_expenses, "cron", hour=0, minute=0
+    )  # Roda todo dia à meia-noite
+    scheduler.start()
+
+    # Roda uma vez ao iniciar para garantir que nada foi perdido
+    process_recurring_expenses()
+
     bot.polling()

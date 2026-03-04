@@ -2,3 +2,4 @@ pyTelegramBotAPI
 python-dotenv
 pymongo
 matplotlib
+apscheduler
